@@ -1,0 +1,7 @@
+[project]
+name = 'base_jump_rate_model_v2'
+type = 'contract'
+version = '0.1.0'
+
+[dependencies]
+carefull_math ="0.1.3"

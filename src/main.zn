@@ -1,0 +1,117 @@
+//!
+//! The 'BaseJumpRateModelV2' contract entry.
+//!
+pub mod types;
+use self::types::Address;
+use self::types::Balance;
+use carefull_math::safe_math;
+ const BLOCKS_PER_YEAH:u248=2102400 as u248;
+contract BaseJumpRateModelV2 {
+     /**
+     * @notice The address of the owner, i.e. the Timelock contract, which can update parameters directly
+     */
+     pub owner: Address;
+    /**
+     * @notice The base interest rate which is the y-intercept when utilization rate is 0
+     */
+    pub baseRatePerBlock: Balance;
+    /** 
+     * @notice The multiplier of utilization rate that gives the slope of the interest rate
+     */
+      pub multiplierPerBlock: Balance;
+
+    /**
+     * @notice The multiplierPerBlock after hitting a specified utilization point
+     */
+     pub jumpMultiplierPerBlock: Balance;
+
+    /** 
+     * @notice The utilization point at which the jump multiplier is applied
+     */
+     pub kink: Balance;
+      /**
+     * @notice Construct an interest rate model
+     * @param _baseRatePerYear The approximate target base APR, as a mantissa (scaled by 1e18)
+     * @param _multiplierPerYear The rate of increase in interest rate wrt utilization (scaled by 1e18)
+     * @param _jumpMultiplierPerYear The multiplierPerBlock after hitting a specified utilization point
+     * @param _kink The utilization point at which the jump multiplier is applied
+     * @param _owner The address of the owner, i.e. the Timelock contract (which has the ability to update parameters directly)
+     */
+    pub fn new(_owner:Address,_baseRatePerYear: Balance,_multiplierPerYear:Balance,_jumpMultiplierPerYear:Balance,_kink:Balance) -> Self {
+    Self {
+            owner:_owner,
+            baseRatePerBlock: safe_math::div(_baseRatePerYear,BLOCKS_PER_YEAH),
+            multiplierPerBlock: safe_math::div(safe_math::mul(_multiplierPerYear,1E18 as u248),safe_math::mul(BLOCKS_PER_YEAH,_kink)),
+            jumpMultiplierPerBlock: safe_math::div(_jumpMultiplierPerYear,BLOCKS_PER_YEAH),
+            kink:_kink,
+        }
+    }
+
+
+     /**
+     * @notice Update the parameters of the interest rate model (only callable by owner, i.e. Timelock)
+     * @param baseRatePerYear The approximate target base APR, as a mantissa (scaled by 1e18)
+     * @param multiplierPerYear The rate of increase in interest rate wrt utilization (scaled by 1e18)
+     * @param jumpMultiplierPerYear The multiplierPerBlock after hitting a specified utilization point
+     * @param kink_ The utilization point at which the jump multiplier is applied
+     */
+    pub fn updateJumpRateModel(mut self,_baseRatePerYear:Balance, _multiplierPerYear:Balance, _jumpMultiplierPerYear :Balance, _kink:Balance) {
+        require(zksync::msg.sender == self.owner, "only the owner may call this function.");
+         self.updateJumpRateModelInternal(_baseRatePerYear, _multiplierPerYear, _jumpMultiplierPerYear, _kink);
+    }
+
+
+
+    /**
+     * @notice Calculates the utilization rate of the market: `borrows / (cash + borrows - reserves)`
+     * @param cash The amount of cash in the market
+     * @param borrows The amount of borrows in the market
+     * @param reserves The amount of reserves in the market (currently unused)
+     * @return The utilization rate as a mantissa between [0, 1e18]
+     */
+      fn  utilizationRate(self,cash:Balance,borrows:Balance, reserves:Balance) ->Balance {
+        // Utilization rate is 0 when there are no borrows
+        if (borrows == 0) {
+             0 as Balance
+        }else{
+           safe_math::div(safe_math::mul(borrows,1E18 as u248), safe_math::sub(safe_math::add(cash,borrows),reserves)) 
+        }  
+    }
+
+        /**
+     * @notice Calculates the current borrow rate per block, with the error code expected by the market
+     * @param cash The amount of cash in the market
+     * @param borrows The amount of borrows in the market
+     * @param reserves The amount of reserves in the market
+     * @return The borrow rate percentage per block as a mantissa (scaled by 1e18)
+     */
+    pub fn getBorrowRateInternal(self,_cash:Balance, _borrows:Balance,_reserves:Balance)->Balance{
+        let util = self.utilizationRate(_cash, _borrows, _reserves);
+         dbg!("{}-{}",util,self.kink);
+         let mut resp=0 as u248;
+        if (util <= self.kink) {
+         safe_math::add(safe_math::div(safe_math::mul(util,self.multiplierPerBlock),1E18 as u248),self.baseRatePerBlock)
+         } else {
+             let  mul_res=safe_math::mul(self.kink,self.multiplierPerBlock);
+             let div_res=safe_math::div(mul_res,1E18 as u248);
+             let normalRate =safe_math::add(div_res,self.baseRatePerBlock);
+            let excessUtil = safe_math::sub(util,self.kink);
+            safe_math::add(safe_math::div(safe_math::mul(excessUtil,self.jumpMultiplierPerBlock),1E18 as u248),normalRate)
+         }
+    }
+
+     pub fn updateJumpRateModelInternal(mut self,_baseRatePerYear:Balance,_multiplierPerYear:Balance,_jumpMultiplierPerYear:Balance,_kink:Balance){
+
+        self.baseRatePerBlock=safe_math::div(_baseRatePerYear,BLOCKS_PER_YEAH);
+        self.multiplierPerBlock=safe_math::div(safe_math::mul(_multiplierPerYear,1E18 as u248),safe_math::mul(BLOCKS_PER_YEAH,_kink));
+         self.jumpMultiplierPerBlock=safe_math::div(_jumpMultiplierPerYear,BLOCKS_PER_YEAH);
+         self.kink=_kink;
+    };
+}
+
+#[test]
+fn test_getBorrowRateInternal(){
+    let account =0xDF255110565ffF30cB72dfd4b372Ce2C4b1fd32a as Address;
+    let _contract=BaseJumpRateModelV2::new(account,210240 as Balance,240240 as Balance,440240 as Balance,164024000000 as Balance);
+    dbg!("21-{}",_contract.getBorrowRateInternal(10000 as Balance,2000 as Balance,1000 as Balance));
+}
